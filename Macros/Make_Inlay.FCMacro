@@ -1,0 +1,107 @@
+import FreeCAD as App
+import FreeCADGui as Gui
+from PySide import QtWidgets
+
+doc = App.ActiveDocument
+if doc is None:
+    App.Console.PrintError("No active document found.\n")
+    exit(1)
+
+# Get pocket depth
+pocket_depth_default = 3.0
+try:
+    pocket_depth_default = doc.getObject("VarSet").InlayDepth
+except:
+    App.Console.PrintError("VarSet.InlayDepth not found. Default value inserted.\n")
+
+pocket_depth, ok_pressed = QtWidgets.QInputDialog.getDouble(
+    None, 
+    "Set Pocket Depth", 
+    "Enter the depth in mm:", 
+    pocket_depth_default,    # Default value
+    0.1,    # Minimum allowed value
+    50.0,   # Maximum allowed value
+    2       # Number of decimal places allowed
+)
+
+if not ok_pressed:
+    App.Console.PrintWarning("Operation cancelled.\n")
+    exit(1)
+    
+# Get tolerance (mm)
+tolerance, ok_pressed = QtWidgets.QInputDialog.getDouble(
+    None, 
+    "Set Tolerance", 
+    "Enter the tolerance in mm:", 
+    0.15,   # Default value
+    0.0,    # Minimum allowed value
+    2.0,    # Maximum allowed value
+    2       # Number of decimal places allowed
+)
+if not ok_pressed:
+    App.Console.PrintWarning("Operation cancelled.\n")
+    exit(1)
+
+
+# Get selected sketch
+selection = Gui.Selection.getSelection()
+if not selection:
+    App.Console.PrintError("ERROR: Please select a Sketch or Clone in the Tree View first!\n")
+    exit(1)
+
+profile_obj = selection[0]
+sketch = profile_obj
+
+# Find the target body
+target_body = None
+for parent in sketch.InList:
+    if parent.TypeId == 'PartDesign::Body':
+        target_body = parent
+        break
+
+if not target_body:
+    App.Console.PrintError(f"ERROR: '{sketch.Label}' is not inside a PartDesign Body.\n")
+    exit(1)
+    
+# Create pocket
+try:
+    # Create the Pocket object inside the body
+    pocket = target_body.newObject('PartDesign::Pocket', f"Pocket_{sketch.Name}")
+    
+    # Set the selected sketch/clone as the profile to cut
+    pocket.Profile = sketch
+    
+    # Set the depth
+    pocket.Length = pocket_depth
+    
+    # Update the Body's "Tip" (the final feature in the timeline) to this new pocket
+    target_body.Tip = pocket
+    
+    # Disable sketch
+    sketch.Visibility = False
+    
+    # Recompute to show the 3D cut
+    doc.recompute()
+    App.Console.PrintMessage(f"SUCCESS: Created a {pocket_depth}mm pocket using {sketch.Label}!\n")
+
+except Exception as e:
+    App.Console.PrintError(f"ERROR: Failed to create pocket. {e}\n")
+    exit(1)
+    
+# Create a new body
+new_body = doc.addObject('PartDesign::Body', 'SVG_Inlay')
+
+# Project original sketch to new body
+binder = new_body.newObject('PartDesign::SubShapeBinder', f"Binder_{sketch.Name}")
+binder.Support = [(sketch, "")]
+binder.Offset = -tolerance
+
+# Create the pad (solid shape)
+pad = new_body.newObject('PartDesign::Pad', 'Inlay_Pad')
+pad.Profile = binder
+pad.Length = pocket_depth - tolerance
+pad.Reversed = True
+
+new_body.Tip = pad
+
+doc.recompute()

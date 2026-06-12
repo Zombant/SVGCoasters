@@ -1,0 +1,88 @@
+import FreeCAD as App
+import FreeCADGui as Gui
+import importSVG
+import Draft
+import Part
+import Sketcher
+from PySide import QtWidgets
+
+doc = App.ActiveDocument
+if doc is None:
+    App.Console.PrintError("No active document found.\n")
+    exit(1)
+
+# Get user selection
+selection = Gui.Selection.getSelectionEx()
+if not selection or not selection[0].HasSubObjects:
+    App.Console.PrintError("ERROR: Please select a face on your 3D part\n")
+    exit(1)
+
+target_object = selection[0].Object
+target_face_name = selection[0].SubElementNames[0]
+
+if not target_face_name.startswith("Face"):
+    App.Console.PrintError("ERROR: You selected something else. Please click on a flat Face.\n")
+    exit(1)
+    
+svg_file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+        None, 
+        "Select SVG Design", 
+        "", 
+        "SVG Files (*.svg);;All Files (*.*)"
+    )
+
+if not svg_file_path:
+    App.Console.PrintWarning("Operation cancelled: No SVG file was selected.\n")
+    exit(1)
+
+# Snapshot of existing objects
+existing_objects = [obj.Name for obj in doc.Objects]
+
+# Import SVG
+try:
+    importSVG.insert(svg_file_path, doc.Name)
+except Exception as e:
+    App.Console.PrintError(f"ERROR: Could not load SVG file. {e}\n")
+    exit(1)
+
+# Get only the objects that were just inserted
+imported_paths = [obj for obj in doc.Objects if obj.Name not in existing_objects]
+
+# Get center of SVG
+shapes = [obj.Shape for obj in imported_paths if hasattr(obj, 'Shape')]
+compound = Part.makeCompound(shapes)
+current_center = compound.BoundBox.Center
+
+# Move to origin
+translation_vector = App.Vector(-current_center.x, -current_center.y, 0)
+Draft.move(imported_paths, translation_vector, copy=False)
+
+# Convert the Paths into a single Sketch
+sketch = Draft.make_sketch(imported_paths, autoconstraints=True)
+sketch.Label = "SVG_Sketch"
+
+for i in range(len(sketch.Geometry)):
+    sketch.addConstraint(Sketcher.Constraint("Block", i))
+
+# Clean up imported paths
+for obj in imported_paths:
+    doc.removeObject(obj.Name)
+    
+# Map sketch to selected face
+sketch.AttachmentSupport = [(target_object, target_face_name)]
+sketch.MapMode = "FlatFace"
+    
+# Move sketch to active body
+for parent in target_object.InList:
+    if parent.TypeId == 'PartDesign::Body':
+        parent.addObject(sketch)
+        break
+
+# Recompute the document
+doc.recompute()
+
+QtWidgets.QMessageBox.information(
+    None,
+    "User Action Required",
+    "Next Steps: Scale and slide sketch as desired."
+)
